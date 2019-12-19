@@ -6,22 +6,49 @@
  * -----
  * Copyright 2019 - 2019 AES-Unifr, AES2019-Yellow
  */
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:bottom_navy_bar/bottom_navy_bar.dart';
+import 'package:geolocator/geolocator.dart';
 
 const LOGIN_API = "http://127.0.0.1:3000/login/";
 const REG_API = "http://127.0.0.1:3000/register/";
+const DEVICE_API = "http://127.0.0.1:3000/devices/";
+const HOST = "http://127.0.0.1:3000";
+const AERIS_API_SECRET = "iSgRXRaZBQJGtlveYR1mVuD6pTkePdnqK19VUf25";
+const AERIS_API_KEY = "lb0lr2m16uYd0oENeFeZy";
+const OPEN_WEATHER_API_KEY = "8f343836a14787d4573a0daabf48adc0";
+const AERIS_API_PREF = "http://api.aerisapi.com/airquality/";
+//HOST + long,lat+?client_id=$AERIS_API_KEY&clinet_secret=$AERIS_API_SECRET
+const OPEN_WEATHER_API_PREF = "http://api.openweathermap.org/data/2.5/weather";
+// http://api.openweathermap.org/data/2.5/weather?lat=${location.coords.latitude}&lon=${location.coords.longitude}&units=metric&APPID=${OPENWEATHER_API_KEY}`
+const DEFAULT_LAT = "46.7940";
+const DEFAULT_LONG = "7.1577";
 class Login extends StatefulWidget {
   @override
   _LoginState createState()=> _LoginState();
 }
 
 enum LoginStatus { notLogIn, LogIn }
+enum SuffocationLevel {suffocationHigh, suffocationMedium, suffocationLow}
+extension SuffocationLevelExtension on SuffocationLevel{
+  String get name{
+    switch (this) {
+      case SuffocationLevel.suffocationHigh:
+        return "High";
+      case SuffocationLevel.suffocationMedium:
+        return "Medium";
+      case SuffocationLevel.suffocationLow:
+        return "Low";
+    }
+  }
+}
 
 class _LoginState extends State<Login>{
   LoginStatus _loginStatus = LoginStatus.notLogIn;
@@ -676,20 +703,44 @@ class _MainMenuState extends State<MainMenu> {
       widget.logOut();
     });
   }
-
+  SharedPreferences sharedPreferences;
   int currentIndex = 0;
   String selectedIndex = 'TAB: 0';
   String email = "", username = "";
   TabController tabController;
+  Geolocator geolocator = Geolocator();
+  GeolocationStatus _geolocationStatus;
+  Position currentPosition;
+  String device;
+  String token;
+  String inTemp;
+  String inHum;
+  String inCO2;
+  double outTemp;
+  int outHum;
 
-  getPref() async {
-    SharedPreferences preferences = await SharedPreferences.getInstance();
+
+
+  getPref() {
+    SharedPreferences.getInstance().then((SharedPreferences sp){
+      sharedPreferences = sp;
+      email = sp.getString("email");
+      username = sp.get("username");
+      token = sp.get("token");
+    });
     setState(() {
-      email = preferences.getString("email");
-      username = preferences.get("username");
+
     });
     // print("username"+username);
 
+  }
+
+  Future<String> getToken() async {
+
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    token = prefs.getString('token');
+
+    return token;
   }
 
   @override
@@ -699,9 +750,119 @@ class _MainMenuState extends State<MainMenu> {
     getPref();
   }
 
+  checkGeo() async {
+    _geolocationStatus  = await Geolocator().checkGeolocationPermissionStatus();
+    print(_geolocationStatus.toString());
+  }
+
+  getDevice() async {
+    final auth = "Bearer "+ await getToken();
+    final response = await http.get(DEVICE_API,
+        headers: {"Content-Type": "application/json",
+        "Authorization": auth},
+        );
+    final data = jsonDecode(response.body);
+    device = data["devices"][0];
+  }
+
+  Future<String> _getInTemperature() async{
+    final urlArray = [HOST, device, "temperature"];
+    final url = urlArray.join("/");
+    final response = await http.get(url,
+      headers: {"Content-Type": "application/json",
+        "Authorization":"Bearer "+token},);
+    //print(token);
+    final data = jsonDecode(response.body); // array
+    List temperatureList = data.map((e)=>double.parse(e['temperature'])).toList();
+    //print(temperatureList.toString());
+    double sum = temperatureList.reduce((a,b)=>a+b);
+    double mean = sum/temperatureList.length;
+    return mean.toStringAsFixed(1);
+}
+  Future<String> _getInHumidity() async{
+    final urlArray = [HOST, device, "humidity"];
+    final url = urlArray.join("/");
+    final response = await http.get(url,
+      headers: {"Content-Type": "application/json",
+        "Authorization":"Bearer "+token},);
+    final data = jsonDecode(response.body); // array
+    List humidityList = data.map((e)=>double.parse(e['humidity'])).toList();
+    double sum = humidityList.reduce((a,b)=>a+b);
+    double mean = sum/humidityList.length;
+    return mean.toStringAsFixed(1);
+  }
+
+  Future<String> _getInCO2() async{
+    final urlArray = [HOST, device, "airquality"];
+    final url = urlArray.join("/");
+    final response = await http.get(url,
+      headers: {"Content-Type": "application/json",
+        "Authorization":"Bearer "+token},);
+    final data = jsonDecode(response.body); // array
+    List cO2List = data.map((e)=>double.parse(e['CO2'])).toList();
+    double sum = cO2List.reduce((a,b)=>a+b);
+    double mean = sum/cO2List.length;
+    return mean.toStringAsFixed(1);
+  }
+
+Future<Map> _getOutWeather() async{
+    var long, lat;
+    if (currentPosition==null){
+      long = DEFAULT_LONG;
+      lat = DEFAULT_LAT;
+    }else {
+      long = currentPosition.longitude.toString();
+      lat = currentPosition.latitude.toString();
+    }
+    final url = OPEN_WEATHER_API_PREF
+        + "?lat="+lat
+        +"&lon="+long
+        +"&units=metric&APPID="+OPEN_WEATHER_API_KEY;
+    final response = await http.get(url,
+      headers: {"Content-Type": "application/json"});
+    final data = jsonDecode(response.body);
+    var outTemperature = data['main']['temp'];
+    var outHumidity = data['main']['humidity'];
+    var res =  {
+      "temperature":outTemperature,
+      "humidity": outHumidity,
+    };
+    return res;
+}
+
+Future<SuffocationLevel> _getSuffocationLevel() async {
+
+    var tempDiff = (double.parse(inTemp)-outTemp).abs();
+    var humDiff = (double.parse(inHum)-outHum).abs();
+    if (tempDiff>25 || humDiff > 80 || double.parse(inCO2)>2000 ) {
+      return SuffocationLevel.suffocationHigh;
+    } else if (tempDiff > 10 || humDiff > 40 || double.parse(inCO2)>1000){
+      return SuffocationLevel.suffocationMedium;
+    } else {
+      return SuffocationLevel.suffocationLow;
+    }
+}
+
+  Future<Position> _getLocation() async {
+    try {
+      currentPosition = await geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.best);
+    } catch (e) {
+      currentPosition = null;
+    }
+    print(currentPosition.toString());
+    return currentPosition;
+  }
+
+
   @override
   Widget build(BuildContext context) {
     // TODO: implement build
+    checkGeo();
+    _getLocation();
+    getDevice();
+
+
     return Scaffold(
       appBar: AppBar(
         actions: <Widget>[
@@ -713,11 +874,294 @@ class _MainMenuState extends State<MainMenu> {
           )
         ],
       ),
-      body: Center(
+      /*body: *Center(
         child: Text(
-          "page for data view",
+          "Location: ",
           style: TextStyle(fontSize: 30.0, color: Colors.blue),
         ),
+      ),*/
+      body: GridView.count(
+        primary: false,
+        padding: const EdgeInsets.all(20),
+        crossAxisSpacing: 10,
+        mainAxisSpacing: 10,
+        crossAxisCount: 2,
+        children: <Widget>[
+          Container(
+            padding: const EdgeInsets.all(8),
+            child: Container(
+              child: Column(
+              children: <Widget>[
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Container(
+                    margin: EdgeInsets.only(top: 10.0, bottom: 10.0),
+                    child: Text("In Temp.",
+                      style: TextStyle(
+                          color: Colors.white70,
+                          fontWeight: FontWeight.bold,
+                          fontSize:21.0),
+                      textAlign: TextAlign.left,
+                    ),
+                  ),
+                ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Container(
+                    margin: EdgeInsets.only(top: 25.0, bottom: 10.0),
+                    child: FutureBuilder<String>(
+                      future: _getInTemperature(),
+                        builder: (context,snapshot){
+                          if (snapshot.hasData){
+                            inTemp = snapshot.data;
+                            return Text(snapshot.data + " °C",
+                              style: TextStyle(
+                                  color: Colors.white70,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize:42.0),
+                              textAlign: TextAlign.center,
+                            );} else if (snapshot.hasError) {
+                            return Text("");
+                            // do something.
+                          }
+                          return CircularProgressIndicator();
+                        }
+                    )
+
+                  ),
+                ),
+              ])),
+            color: Colors.teal[100],
+          ),
+          Container(
+            padding: const EdgeInsets.all(8),
+            child: Container(
+                child: Column(
+                    children: <Widget>[
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Container(
+                          margin: EdgeInsets.only(top: 10.0, bottom: 10.0),
+                          child: Text("Out Temp.",
+                            style: TextStyle(
+                                color: Colors.white70,
+                                fontWeight: FontWeight.bold,
+                                fontSize:21.0),
+                            textAlign: TextAlign.left,
+                          ),
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Container(
+                            margin: EdgeInsets.only(top: 25.0, bottom: 10.0),
+                            child: FutureBuilder<Map>(
+                                future: _getOutWeather(),
+                                builder: (context,snapshot){
+                                  if (snapshot.hasData){
+                                    outTemp = snapshot.data['temperature'];
+                                    return Text(snapshot.data['temperature'].toStringAsFixed(1) + " °C",
+                                      style: TextStyle(
+                                          color: Colors.white70,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize:42.0),
+                                      textAlign: TextAlign.center,
+                                    );} else if (snapshot.hasError) {
+                                    return Text("error");
+
+                                  }
+                                  return CircularProgressIndicator();
+                                }
+                            )
+                        ),
+                      ),
+                    ])),
+            color: Colors.teal[200],
+          ),
+          Container(
+            padding: const EdgeInsets.all(8),
+            child: Container(
+                child: Column(
+                    children: <Widget>[
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Container(
+                          margin: EdgeInsets.only(top: 10.0, bottom: 10.0),
+                          child: Text("In Humidity",
+                            style: TextStyle(
+                                color: Colors.white70,
+                                fontWeight: FontWeight.bold,
+                                fontSize:21.0),
+                            textAlign: TextAlign.left,
+                          ),
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Container(
+                            margin: EdgeInsets.only(top: 25.0, bottom: 10.0),
+                            child: FutureBuilder<String>(
+                                future: _getInHumidity(),
+                                builder: (context,snapshot){
+                                  if (snapshot.hasData){
+                                    inHum = snapshot.data;
+                                    return Text(snapshot.data + " %",
+                                      style: TextStyle(
+                                          color: Colors.white70,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize:42.0),
+                                      textAlign: TextAlign.center,
+                                    );} else if (snapshot.hasError) {
+                                    return Text("");
+                                    // do something.
+                                  }
+                                  return CircularProgressIndicator();
+                                }
+                            )
+
+                        ),
+                      ),
+                    ])),
+            color: Colors.teal[300],
+          ),
+          Container(
+            padding: const EdgeInsets.all(8),
+            child: Container(
+                child: Column(
+                    children: <Widget>[
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Container(
+                          margin: EdgeInsets.only(top: 10.0, bottom: 10.0),
+                          child: Text("Out Humidity",
+                            style: TextStyle(
+                                color: Colors.white70,
+                                fontWeight: FontWeight.bold,
+                                fontSize:21.0),
+                            textAlign: TextAlign.left,
+                          ),
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Container(
+                            margin: EdgeInsets.only(top: 25.0, bottom: 10.0),
+                            child: FutureBuilder<Map>(
+                                future: _getOutWeather(),
+                                builder: (context,snapshot){
+                                  if (snapshot.hasData){
+                                    outHum = snapshot.data['humidity'];
+                                    return Text(snapshot.data['humidity'].toString() + " %",
+                                      style: TextStyle(
+                                          color: Colors.white70,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize:42.0),
+                                      textAlign: TextAlign.center,
+                                    );} else if (snapshot.hasError) {
+                                    return Text("error");
+
+                                  }
+                                  return CircularProgressIndicator();
+                                }
+                            )
+                        ),
+                      ),
+                    ])),
+            color: Colors.teal[400],
+          ),
+          Container(
+            padding: const EdgeInsets.all(8),
+            child: Container(
+                child: Column(
+                    children: <Widget>[
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Container(
+                          margin: EdgeInsets.only(top: 10.0, bottom: 10.0),
+                          child: Text("CO2 ",
+                            style: TextStyle(
+                                color: Colors.white70,
+                                fontWeight: FontWeight.bold,
+                                fontSize:21.0),
+                            textAlign: TextAlign.left,
+                          ),
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Container(
+                            margin: EdgeInsets.only(top: 25.0, bottom: 10.0),
+                            child: FutureBuilder<String>(
+                                future: _getInCO2(),
+                                builder: (context,snapshot){
+                                  if (snapshot.hasData){
+                                    inCO2 = snapshot.data;
+                                    return Text(snapshot.data + " ppm.",
+                                      style: TextStyle(
+                                          color: Colors.white70,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize:35.0),
+                                      textAlign: TextAlign.right,
+                                    );} else if (snapshot.hasError) {
+                                    return Text("");
+                                    // do something.
+                                  }
+                                  return CircularProgressIndicator();
+                                }
+                            )
+
+                        ),
+                      ),
+                    ])),
+            color: Colors.teal[500],
+          ),
+          Container(
+            padding: const EdgeInsets.all(8),
+            child: Container(
+                child: Column(
+                    children: <Widget>[
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Container(
+                          margin: EdgeInsets.only(top: 10.0, bottom: 10.0),
+                          child: Text("Risk of Suffocation:",
+                            style: TextStyle(
+                                color: Colors.white70,
+                                fontWeight: FontWeight.bold,
+                                fontSize:21.0),
+                            textAlign: TextAlign.left,
+                          ),
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Container(
+                            margin: EdgeInsets.only(top: 25.0, bottom: 10.0),
+                            child: FutureBuilder<SuffocationLevel>(
+                                future: _getSuffocationLevel(),
+                                builder: (context,snapshot){
+                                  if (snapshot.hasData){
+                                    return Text(snapshot.data.name,
+                                      style: TextStyle(
+                                          color: Colors.white70,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize:35.0),
+                                      textAlign: TextAlign.right,
+                                    );} else if (snapshot.hasError) {
+
+                                    return Text("");
+                                    // do something.
+                                  }
+                                  return CircularProgressIndicator();
+                                },
+                            )
+
+                        ),
+                      ),
+                    ])),
+            color: Colors.teal[600],
+          ),
+        ],
       ),
       bottomNavigationBar: BottomNavyBar(
         backgroundColor: Colors.grey,
@@ -750,14 +1194,17 @@ class _MainMenuState extends State<MainMenu> {
   // action on Bottom bar Items
   void redirectTo(selectedIndex){
     switch (selectedIndex) {
-      case "TAB:0":
+      case "TAB: 0":
         {
-          print("[TAB:0]" + selectedIndex);
+          setState(() {
+
+          });
+          print("[TAB: 0]" + selectedIndex);
         }
         break;
-      case "TAB:1":
+      case "TAB: 1":
         {
-          print("[TAB:1]" + selectedIndex);
+          print("[TAB: 1]" + selectedIndex);
         }
         break;
     }

@@ -29,6 +29,7 @@ dependencies:
   fluttertoast: ^3.0.4
   bottom_navy_bar: ^3.0.0
   shared_preferences: ^0.5.2
+  geolocator: ^5.1.5
   
 
 dev_dependencies:
